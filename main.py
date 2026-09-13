@@ -27,7 +27,7 @@ SONY_SAB_CHANNEL_ID = "UC6-F5tO8uklgE9Zy8IvbdFw"
 DOWNLOAD_DIR = "downloads"
 
 # Gemini model
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-3.6-flash"
 
 # India timezone
 INDIA_TZ = ZoneInfo("Asia/Kolkata")
