@@ -726,7 +726,7 @@ def main():
     validate_config()
 
     # Put the 16-hour-old teaser URL here
-    test_url = "https://www.youtube.com/watch?v=cLj_hOOZeeg"
+    test_url = "https://youtu.be/VlxaDJr1lqQ?si=XGAylSrORjsQhSHp"
 
     teaser = {
         "title": "TMKOC Test Teaser",
