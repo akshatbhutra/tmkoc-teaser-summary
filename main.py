@@ -19,14 +19,14 @@ from google import genai
 
 load_dotenv()
 
-# Sony SAB official YouTube channel
+# Sony SAB official YouTube channel ID
 SONY_SAB_CHANNEL_ID = "UC6-F5tO8uklgE9Zy8IvbdFw"
 
 # Folder for downloaded teaser
 DOWNLOAD_DIR = "downloads"
 
 # Gemini model
-GEMINI_MODEL = "gemini-3.6-flash"
+GEMINI_MODEL = "gemini-2.5-flash"
 
 # India timezone
 INDIA_TZ = ZoneInfo("Asia/Kolkata")
@@ -90,24 +90,16 @@ def save_last_processed_video(video_id):
 
 
 # ============================================================
-# YOUTUBE RSS & TEASER DISCOVERY
+# FIND LATEST TMKOC TEASER VIA RSS XML FEED
 # ============================================================
 
-def get_channel_rss_url():
-    return (
-        "https://www.youtube.com/feeds/videos.xml"
-        f"?channel_id={SONY_SAB_CHANNEL_ID}"
-    )
-
-
-import requests
-
-def get_youtube_feed():
+def find_latest_teaser():
     """
-    Download Sony SAB's official YouTube RSS feed using requests.
+    Find the most recent TMKOC teaser uploaded by Sony SAB 
+    using YouTube's public RSS XML feed (fully compatible with GitHub Actions cloud IP ranges).
     """
-    print("\nFetching Sony SAB YouTube RSS feed...")
-    rss_url = get_channel_rss_url()
+    print("\nFetching latest videos from Sony SAB RSS feed...")
+    rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={SONY_SAB_CHANNEL_ID}"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -115,56 +107,41 @@ def get_youtube_feed():
         "Accept-Language": "en-US,en;q=0.5"
     }
 
-    response = requests.get(rss_url, headers=headers, timeout=30)
-    response.raise_for_status()
-
-    return ET.fromstring(response.content)
-
-
-# ============================================================
-# FIND LATEST TMKOC TEASER VIA YT-DLP
-# ============================================================
-
-def find_latest_teaser():
-    """
-    Find the most recent TMKOC teaser uploaded by Sony SAB 
-    using yt-dlp channel extraction (bypassing unstable YouTube RSS 500 errors).
-    """
-    print("\nFetching latest videos from Sony SAB channel...")
-    channel_url = f"https://www.youtube.com/channel/{SONY_SAB_CHANNEL_ID}/videos"
-
-    ydl_opts = {
-        "extract_flat": True,  # Don't download videos, just grab metadata
-        "playlistend": 15,     # Check the 15 most recent uploads
-        "quiet": True,
-        "js_runtimes": {
-            "node": {}
-        },
-    }
+    try:
+        response = requests.get(rss_url, headers=headers, timeout=30)
+        response.raise_for_status()
+    except Exception as e:
+        print(f"Failed to fetch RSS feed: {e}")
+        return None
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            result = ydl.extract_info(channel_url, download=False)
-            
-        if not result or "entries" not in result:
-            print("No videos found in channel response.")
-            return None
-
-        entries = result["entries"]
+        root = ET.fromstring(response.content)
+        ns = {
+            'atom': 'http://www.w3.org/2005/Atom',
+            'yt': 'http://www.youtube.com/xml/schemas/2015'
+        }
+        entries = root.findall('atom:entry', ns)
     except Exception as e:
-        print(f"Failed to fetch channel entries: {e}")
+        print(f"Failed to parse XML response: {e}")
+        return None
+
+    if not entries:
+        print("No videos found in RSS feed.")
         return None
 
     now = datetime.now(INDIA_TZ)
     candidates = []
 
     for entry in entries:
-        title = entry.get("title", "")
-        video_id = entry.get("id", "")
-        
-        if not title or not video_id:
+        title_elem = entry.find('atom:title', ns)
+        video_id_elem = entry.find('yt:videoId', ns)
+        published_elem = entry.find('atom:published', ns)
+
+        if title_elem is None or video_id_elem is None:
             continue
 
+        title = title_elem.text
+        video_id = video_id_elem.text
         title_lower = title.lower()
 
         # Matches pattern: "Taarak Mehta..." or "TMKOC" + "Teaser" or "Promo"
@@ -174,12 +151,10 @@ def find_latest_teaser():
         if not (is_tmkoc and is_teaser):
             continue
 
-        # yt-dlp flat extraction might not always give exact upload timestamps,
-        # so we fetch the individual video's upload date safely
-        upload_date_str = entry.get("upload_date") # Format: YYYYMMDD
-        if upload_date_str:
+        # Parse publication date from RSS feed (ISO 8601 format, e.g., 2026-10-24T15:30:00+00:00)
+        if published_elem is not None and published_elem.text:
             try:
-                published_dt = datetime.strptime(upload_date_str, "%Y%m%d").replace(tzinfo=INDIA_TZ)
+                published_dt = datetime.fromisoformat(published_elem.text).astimezone(INDIA_TZ)
             except Exception:
                 published_dt = now
         else:
@@ -209,9 +184,10 @@ def find_latest_teaser():
     print("\nFound Latest Teaser:")
     print(latest["title"])
     print(latest["url"])
-    print("Published:", latest["published"].strftime("%d %B %Y"))
+    print("Published:", latest["published"].strftime("%d %B %Y %H:%M"))
 
     return latest
+
 
 # ============================================================
 # DOWNLOAD VIDEO (OPTIMIZED FOR SPEED)
@@ -235,6 +211,14 @@ def download_video(video_url):
         "merge_output_format": "mp4",
         "noplaylist": True,
         "quiet": True,
+        "geo_bypass": True,
+        "geo_bypass_country": "IN",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["web", "android"]
+            }
+        },
         "js_runtimes": {
             "node": {}
         },
