@@ -2,7 +2,7 @@ name: Daily TMKOC Teaser Bot
 
 on:
   schedule:
-    - cron: '30 15 * * *' # Runs every day at 9:00 PM IST (15:30 UTC)
+    - cron: '32 15 * * *' # Runs every day at 9:00 PM IST (15:30 UTC)
   workflow_dispatch:
 
 jobs:
