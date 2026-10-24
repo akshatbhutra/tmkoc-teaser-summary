@@ -213,10 +213,11 @@ def download_video(video_url):
         "quiet": True,
         "geo_bypass": True,
         "geo_bypass_country": "IN",
+        "geo_bypass_ip_block": "103.250.0.0/16", # Indian IP range spoofing block
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "extractor_args": {
             "youtube": {
-                "player_client": ["web", "android"]
+                "player_client": ["android", "web"],
             }
         },
         "js_runtimes": {
