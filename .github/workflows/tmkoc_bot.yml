@@ -2,7 +2,7 @@ name: Daily TMKOC Teaser Bot
 
 on:
   schedule:
-    - cron: '32 15 * * *' # Runs every day at 9:00 PM IST (15:30 UTC)
+    - cron: '32 15 * * *' # Runs every day at 9:02 PM IST (15:32 UTC)
   workflow_dispatch:
 
 jobs:
@@ -18,7 +18,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install google-genai requests yt-dlp
+        run: pip install google-genai requests yt-dlp python-dotenv
 
       - name: Run script
         env:
