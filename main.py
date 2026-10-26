@@ -1,17 +1,11 @@
 import os
-import glob
-import time
-import urllib.request
-import urllib.parse
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
-import yt_dlp
 from dotenv import load_dotenv
 from google import genai
-
 
 # ============================================================
 # CONFIGURATION
@@ -21,9 +15,6 @@ load_dotenv()
 
 # Sony SAB official YouTube channel ID
 SONY_SAB_CHANNEL_ID = "UC6-F5tO8uklgE9Zy8IvbdFw"
-
-# Folder for downloaded teaser
-DOWNLOAD_DIR = "downloads"
 
 # Gemini model
 GEMINI_MODEL = "gemini-3.5-flash"
@@ -95,8 +86,8 @@ def save_last_processed_video(video_id):
 
 def find_latest_teaser():
     """
-    Find the most recent TMKOC teaser uploaded by Sony SAB 
-    using YouTube's public RSS XML feed (fully compatible with GitHub Actions cloud IP ranges).
+    Find the most recent TMKOC teaser and description uploaded by Sony SAB 
+    using YouTube's public RSS XML feed.
     """
     print("\nFetching latest videos from Sony SAB RSS feed...")
     rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={SONY_SAB_CHANNEL_ID}"
@@ -118,7 +109,8 @@ def find_latest_teaser():
         root = ET.fromstring(response.content)
         ns = {
             'atom': 'http://www.w3.org/2005/Atom',
-            'yt': 'http://www.youtube.com/xml/schemas/2015'
+            'yt': 'http://www.youtube.com/xml/schemas/2015',
+            'media': 'http://search.yahoo.com/mrss/'
         }
         entries = root.findall('atom:entry', ns)
     except Exception as e:
@@ -136,12 +128,14 @@ def find_latest_teaser():
         title_elem = entry.find('atom:title', ns)
         video_id_elem = entry.find('yt:videoId', ns)
         published_elem = entry.find('atom:published', ns)
+        desc_elem = entry.find('media:group/media:description', ns)
 
         if title_elem is None or video_id_elem is None:
             continue
 
         title = title_elem.text
         video_id = video_id_elem.text
+        description = desc_elem.text if desc_elem is not None and desc_elem.text else ""
         title_lower = title.lower()
 
         # Matches pattern: "Taarak Mehta..." or "TMKOC" + "Teaser" or "Promo"
@@ -151,7 +145,6 @@ def find_latest_teaser():
         if not (is_tmkoc and is_teaser):
             continue
 
-        # Parse publication date from RSS feed (ISO 8601 format, e.g., 2026-10-24T15:30:00+00:00)
         if published_elem is not None and published_elem.text:
             try:
                 published_dt = datetime.fromisoformat(published_elem.text).astimezone(INDIA_TZ)
@@ -161,7 +154,7 @@ def find_latest_teaser():
             published_dt = now
 
         # Ignore videos older than 2 days
-        if (now - published_dt) > timedelta(days=2) or published_dt > now:
+        if (now - published_dt) > timedelta(days=3) or published_dt > now:
             continue
 
         video_url = f"https://www.youtube.com/watch?v={video_id}"
@@ -170,6 +163,7 @@ def find_latest_teaser():
             "title": title,
             "video_id": video_id,
             "url": video_url,
+            "description": description,
             "published": published_dt
         })
 
@@ -177,7 +171,6 @@ def find_latest_teaser():
         print("No recent TMKOC teaser found.")
         return None
 
-    # Sort newest first
     candidates.sort(key=lambda x: x["published"], reverse=True)
     latest = candidates[0]
 
@@ -190,120 +183,36 @@ def find_latest_teaser():
 
 
 # ============================================================
-# DOWNLOAD VIDEO (OPTIMIZED FOR SPEED)
+# SUMMARIZE VIDEO METADATA WITH GEMINI
 # ============================================================
 
-def download_video(video_url):
-    print("\nDownloading teaser video (optimized)...")
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
-    for old_file in glob.glob(os.path.join(DOWNLOAD_DIR, "tmkoc_teaser.*")):
-        try:
-            os.remove(old_file)
-        except Exception:
-            pass
-
-    output_template = os.path.join(DOWNLOAD_DIR, "tmkoc_teaser.%(ext)s")
-
-    options = {
-        "format": "bestvideo[height<=480]+bestaudio/best[height<=480]/best",
-        "outtmpl": output_template,
-        "merge_output_format": "mp4",
-        "noplaylist": True,
-        "quiet": True,
-        "geo_bypass": True,
-        "geo_bypass_country": "IN",
-        "geo_bypass_ip_block": "103.250.0.0/16", # Indian IP range spoofing block
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "web"],
-            }
-        },
-        "js_runtimes": {
-            "node": {}
-        },
-    }
-
-    try:
-        with yt_dlp.YoutubeDL(options) as ydl:
-            ydl.download([video_url])
-    except Exception as e:
-        print("\nDownload failed:", str(e))
-        raise
-
-    files = glob.glob(os.path.join(DOWNLOAD_DIR, "tmkoc_teaser.*"))
-    video_files = [
-        f for f in files
-        if f.lower().endswith((".mp4", ".mkv", ".webm", ".mov", ".m4v"))
-    ]
-
-    if not video_files:
-        raise Exception("Video download failed: no video file found.")
-
-    video_file = video_files[0]
-    print(f"Downloaded successfully: {video_file}")
-    return video_file
-
-
-# ============================================================
-# UPLOAD VIDEO TO GEMINI
-# ============================================================
-
-def upload_video(video_file):
-    print("\nUploading teaser to Gemini...")
-    uploaded_file = client.files.upload(file=video_file)
-    print("Gemini file uploaded:", uploaded_file.name)
-
-    print("Waiting for Gemini to process video...")
-    while True:
-        uploaded_file = client.files.get(name=uploaded_file.name)
-        state = uploaded_file.state.name
-        print("Gemini file state:", state)
-
-        if state == "ACTIVE":
-            break
-        if state == "FAILED":
-            raise Exception("Gemini failed to process the uploaded video.")
-
-        time.sleep(3)
-
-    print("Video is ready for analysis.")
-    return uploaded_file
-
-
-# ============================================================
-# SUMMARIZE VIDEO
-# ============================================================
-
-def summarize_video(uploaded_file, teaser_title):
-    print("\nAnalyzing teaser with Gemini...")
+def summarize_teaser(teaser_title, teaser_description):
+    print("\nGenerating summary with Gemini...")
 
     prompt = f"""
-You are analyzing an official Taarak Mehta Ka Ooltah Chashmah (TMKOC) episode teaser from Sony SAB.
+You are analyzing an official Taarak Mehta Ka Ooltah Chashmah (TMKOC) episode teaser from Sony SAB based on its official metadata.
 
-Video title:
+Video Title:
 {teaser_title}
 
-Watch the ENTIRE video carefully. Analyze both spoken dialogue and visual actions/events.
+Video Description:
+{teaser_description}
 
 Create a concise, engaging summary in English (150-250 words) covering:
-1. Episode number, if visible or inferable from the title
-2. Main characters appearing in the teaser
-3. What happens in the teaser
-4. The main problem/conflict
-5. Important dialogue or revelation, paraphrased
-6. What appears likely to happen in the upcoming episode
+1. Episode number, if visible or inferable from the title/description
+2. Main characters involved or mentioned
+3. What happens in the upcoming episode based on the official teaser details
+4. The main conflict or storyline highlighted
+5. What viewers can expect
 
 Important rules:
-- Do NOT invent events or assume things not shown.
-- Clearly distinguish what is shown from what is suggested.
+- Do NOT invent events or assume things not mentioned.
 - Keep it easy to read with bullet points or structured sections.
 """
 
     response = client.models.generate_content(
         model=GEMINI_MODEL,
-        contents=[uploaded_file, prompt]
+        contents=prompt
     )
 
     summary = response.text
@@ -312,28 +221,6 @@ Important rules:
 
     print("\nGemini summary generated.")
     return summary.strip()
-
-
-# ============================================================
-# DELETE GEMINI FILE & LOCAL CLEANUP
-# ============================================================
-
-def delete_gemini_file(uploaded_file):
-    try:
-        client.files.delete(name=uploaded_file.name)
-        print("Deleted temporary Gemini file.")
-    except Exception as e:
-        print("Could not delete Gemini file:", e)
-
-
-def cleanup():
-    print("\nCleaning up local downloads...")
-    for file in glob.glob(os.path.join(DOWNLOAD_DIR, "tmkoc_teaser.*")):
-        try:
-            os.remove(file)
-            print("Deleted:", file)
-        except Exception as e:
-            print("Could not delete:", file, e)
 
 
 # ============================================================
@@ -378,29 +265,18 @@ def main():
 
     validate_config()
 
-    # 1. Automatically find latest teaser from Sony SAB RSS feed
     teaser = find_latest_teaser()
     if not teaser:
         print("No eligible teaser found at this moment.")
         return
 
-    # Check if this video was already processed
     last_processed = get_last_processed_video()
     if teaser["video_id"] == last_processed:
         print("\nThis teaser has already been processed and sent. Exiting.")
         return
 
-    uploaded_file = None
-
     try:
-        # 2. Download optimized video
-        video_file = download_video(teaser["url"])
-
-        # 3. Upload to Gemini Files API
-        uploaded_file = upload_video(video_file)
-
-        # 4. Generate summary
-        summary = summarize_video(uploaded_file, teaser["title"])
+        summary = summarize_teaser(teaser["title"], teaser["description"])
 
         print("\n" + "=" * 60)
         print("GEMINI SUMMARY OUTPUT")
@@ -408,21 +284,14 @@ def main():
         print(summary)
         print("=" * 60)
 
-        # 5. Send to WhatsApp
         send_whatsapp(teaser, summary)
 
-        # 6. Save video ID so it doesn't process again
         save_last_processed_video(teaser["video_id"])
         print("\nProcess completed successfully!")
 
     except Exception as e:
         print("\nAUTOMATION FAILED:")
         print(e)
-
-    finally:
-        if uploaded_file:
-            delete_gemini_file(uploaded_file)
-        cleanup()
 
 
 # ============================================================
