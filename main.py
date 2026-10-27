@@ -128,15 +128,20 @@ def get_youtube_feed():
 def find_latest_teaser():
     """
     Find the most recent TMKOC teaser uploaded by Sony SAB 
-    using yt-dlp channel extraction (bypassing unstable YouTube RSS 500 errors).
+    using the reliable YouTube uploads playlist URL.
     """
-    print("\nFetching latest videos from Sony SAB channel...")
-    channel_url = f"https://www.youtube.com/channel/{SONY_SAB_CHANNEL_ID}/videos"
+    print("\nFetching latest videos from Sony SAB playlist...")
+    # Convert channel ID (UC...) to uploads playlist ID (UU...)
+    playlist_id = "UU" + SONY_SAB_CHANNEL_ID[2:]
+    playlist_url = f"https://www.youtube.com/playlist?list={playlist_id}"
 
     ydl_opts = {
-        "extract_flat": True,  # Don't download videos, just grab metadata
-        "playlistend": 15,     # Check the 15 most recent uploads
+        "extract_flat": True,
+        "playlistend": 25,
         "quiet": True,
+        "geo_bypass": True,
+        "geo_bypass_country": "IN",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "js_runtimes": {
             "node": {}
         },
@@ -144,15 +149,15 @@ def find_latest_teaser():
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            result = ydl.extract_info(channel_url, download=False)
-            
+            result = ydl.extract_info(playlist_url, download=False)
+
         if not result or "entries" not in result:
-            print("No videos found in channel response.")
+            print("No videos found in playlist response.")
             return None
 
         entries = result["entries"]
     except Exception as e:
-        print(f"Failed to fetch channel entries: {e}")
+        print(f"Failed to fetch playlist entries: {e}")
         return None
 
     now = datetime.now(INDIA_TZ)
@@ -161,7 +166,7 @@ def find_latest_teaser():
     for entry in entries:
         title = entry.get("title", "")
         video_id = entry.get("id", "")
-        
+
         if not title or not video_id:
             continue
 
@@ -174,9 +179,7 @@ def find_latest_teaser():
         if not (is_tmkoc and is_teaser):
             continue
 
-        # yt-dlp flat extraction might not always give exact upload timestamps,
-        # so we fetch the individual video's upload date safely
-        upload_date_str = entry.get("upload_date") # Format: YYYYMMDD
+        upload_date_str = entry.get("upload_date")  # Format: YYYYMMDD
         if upload_date_str:
             try:
                 published_dt = datetime.strptime(upload_date_str, "%Y%m%d").replace(tzinfo=INDIA_TZ)
@@ -185,8 +188,8 @@ def find_latest_teaser():
         else:
             published_dt = now
 
-        # Ignore videos older than 2 days
-        if (now - published_dt) > timedelta(days=2) or published_dt > now:
+        # Ignore videos older than 5 days
+        if (now - published_dt) > timedelta(days=5) or published_dt > now:
             continue
 
         video_url = f"https://www.youtube.com/watch?v={video_id}"
