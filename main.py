@@ -1,6 +1,8 @@
 import os
 import glob
 import time
+import urllib.request
+import urllib.parse
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -88,24 +90,53 @@ def save_last_processed_video(video_id):
 
 
 # ============================================================
-# FIND RECENT TMKOC TEASERS VIA YOUTUBE PLAYLIST
+# YOUTUBE RSS & TEASER DISCOVERY
 # ============================================================
 
-def find_recent_teasers():
+def get_channel_rss_url():
+    return (
+        "https://www.youtube.com/feeds/videos.xml"
+        f"?channel_id={SONY_SAB_CHANNEL_ID}"
+    )
+
+
+import requests
+
+def get_youtube_feed():
     """
-    Find recent TMKOC teasers uploaded by Sony SAB using the stable uploads playlist URL.
+    Download Sony SAB's official YouTube RSS feed using requests.
     """
-    print("\nFetching latest videos from Sony SAB playlist...")
-    playlist_id = "UU" + SONY_SAB_CHANNEL_ID[2:]
-    playlist_url = f"https://www.youtube.com/playlist?list={playlist_id}"
+    print("\nFetching Sony SAB YouTube RSS feed...")
+    rss_url = get_channel_rss_url()
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5"
+    }
+
+    response = requests.get(rss_url, headers=headers, timeout=30)
+    response.raise_for_status()
+
+    return ET.fromstring(response.content)
+
+
+# ============================================================
+# FIND LATEST TMKOC TEASER VIA YT-DLP
+# ============================================================
+
+def find_latest_teaser():
+    """
+    Find the most recent TMKOC teaser uploaded by Sony SAB 
+    using yt-dlp channel extraction (bypassing unstable YouTube RSS 500 errors).
+    """
+    print("\nFetching latest videos from Sony SAB channel...")
+    channel_url = f"https://www.youtube.com/channel/{SONY_SAB_CHANNEL_ID}/videos"
 
     ydl_opts = {
         "extract_flat": True,  # Don't download videos, just grab metadata
-        "playlistend": 20,     # Check the 20 most recent uploads
+        "playlistend": 15,     # Check the 15 most recent uploads
         "quiet": True,
-        "geo_bypass": True,
-        "geo_bypass_country": "IN",
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "js_runtimes": {
             "node": {}
         },
@@ -113,16 +144,16 @@ def find_recent_teasers():
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            result = ydl.extract_info(playlist_url, download=False)
+            result = ydl.extract_info(channel_url, download=False)
             
         if not result or "entries" not in result:
-            print("No videos found in playlist response.")
-            return []
+            print("No videos found in channel response.")
+            return None
 
         entries = result["entries"]
     except Exception as e:
-        print(f"Failed to fetch playlist entries: {e}")
-        return []
+        print(f"Failed to fetch channel entries: {e}")
+        return None
 
     now = datetime.now(INDIA_TZ)
     candidates = []
@@ -143,7 +174,9 @@ def find_recent_teasers():
         if not (is_tmkoc and is_teaser):
             continue
 
-        upload_date_str = entry.get("upload_date")  # Format: YYYYMMDD
+        # yt-dlp flat extraction might not always give exact upload timestamps,
+        # so we fetch the individual video's upload date safely
+        upload_date_str = entry.get("upload_date") # Format: YYYYMMDD
         if upload_date_str:
             try:
                 published_dt = datetime.strptime(upload_date_str, "%Y%m%d").replace(tzinfo=INDIA_TZ)
@@ -152,8 +185,8 @@ def find_recent_teasers():
         else:
             published_dt = now
 
-        # Ignore videos older than 3 days
-        if (now - published_dt) > timedelta(days=3) or published_dt > now:
+        # Ignore videos older than 2 days
+        if (now - published_dt) > timedelta(days=2) or published_dt > now:
             continue
 
         video_url = f"https://www.youtube.com/watch?v={video_id}"
@@ -167,30 +200,21 @@ def find_recent_teasers():
 
     if not candidates:
         print("No recent TMKOC teaser found.")
-        return []
+        return None
 
     # Sort newest first
     candidates.sort(key=lambda x: x["published"], reverse=True)
-    return candidates
+    latest = candidates[0]
 
-
-def is_country_restriction_error(error):
-    message = str(error).lower()
-    return (
-        "not available in your country" in message
-        or "not made this video available in your country" in message
-    )
-
-
-def print_teaser(teaser):
     print("\nFound Latest Teaser:")
-    print(teaser["title"])
-    print(teaser["url"])
-    print("Published:", teaser["published"].strftime("%d %B %Y"))
+    print(latest["title"])
+    print(latest["url"])
+    print("Published:", latest["published"].strftime("%d %B %Y"))
 
+    return latest
 
 # ============================================================
-# DOWNLOAD VIDEO (OPTIMIZED FOR SPEED & PROXY SUPPORT)
+# DOWNLOAD VIDEO (OPTIMIZED FOR SPEED)
 # ============================================================
 
 def download_video(video_url):
@@ -211,10 +235,6 @@ def download_video(video_url):
         "merge_output_format": "mp4",
         "noplaylist": True,
         "quiet": True,
-        "geo_bypass": True,
-        "geo_bypass_country": "IN",
-        "proxy": os.getenv("INDIAN_PROXY_URL"),  # Uses proxy secret on GitHub Actions
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "js_runtimes": {
             "node": {}
         },
@@ -373,14 +393,13 @@ def main():
 
     validate_config()
 
-    teasers = find_recent_teasers()
-    if not teasers:
+    # 1. Automatically find latest teaser from Sony SAB RSS feed
+    teaser = find_latest_teaser()
+    if not teaser:
         print("No eligible teaser found at this moment.")
         return
 
-    teaser = teasers[0]
-    print_teaser(teaser)
-
+    # Check if this video was already processed
     last_processed = get_last_processed_video()
     if teaser["video_id"] == last_processed:
         print("\nThis teaser has already been processed and sent. Exiting.")
@@ -389,35 +408,13 @@ def main():
     uploaded_file = None
 
     try:
-        video_file = None
-        for index, candidate in enumerate(teasers):
-            teaser = candidate
-            if teaser["video_id"] == last_processed:
-                print(f"\nSkipping previously processed teaser: {teaser['title']}")
-                continue
+        # 2. Download optimized video
+        video_file = download_video(teaser["url"])
 
-            try:
-                video_file = download_video(teaser["url"])
-                if index > 0:
-                    print(f"\nUsing older eligible teaser: {teaser['title']}")
-                break
-            except Exception as e:
-                if not is_country_restriction_error(e):
-                    raise
-
-                print("\nThis teaser is not available from the current region:")
-                print(e)
-                if index + 1 < len(teasers):
-                    print("Trying the next older eligible teaser...")
-                else:
-                    print("No other recent eligible teaser is available to try.")
-
-        if not video_file:
-            print("No unprocessed, accessible recent teaser could be downloaded.")
-            return
-
+        # 3. Upload to Gemini Files API
         uploaded_file = upload_video(video_file)
 
+        # 4. Generate summary
         summary = summarize_video(uploaded_file, teaser["title"])
 
         print("\n" + "=" * 60)
@@ -426,8 +423,10 @@ def main():
         print(summary)
         print("=" * 60)
 
+        # 5. Send to WhatsApp
         send_whatsapp(teaser, summary)
 
+        # 6. Save video ID so it doesn't process again
         save_last_processed_video(teaser["video_id"])
         print("\nProcess completed successfully!")
 
