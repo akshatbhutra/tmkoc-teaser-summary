@@ -1,9 +1,6 @@
 import os
 import glob
 import time
-import urllib.request
-import urllib.parse
-import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -19,14 +16,14 @@ from google import genai
 
 load_dotenv()
 
-# Sony SAB official YouTube channel
+# Sony SAB official YouTube channel ID
 SONY_SAB_CHANNEL_ID = "UC6-F5tO8uklgE9Zy8IvbdFw"
 
-# Folder for downloaded teaser
+# Folder for downloaded teaser audio
 DOWNLOAD_DIR = "downloads"
 
 # Gemini model
-GEMINI_MODEL = "gemini-3.6-flash"
+GEMINI_MODEL = "gemini-3.5-flash"
 
 # India timezone
 INDIA_TZ = ZoneInfo("Asia/Kolkata")
@@ -90,39 +87,7 @@ def save_last_processed_video(video_id):
 
 
 # ============================================================
-# YOUTUBE RSS & TEASER DISCOVERY
-# ============================================================
-
-def get_channel_rss_url():
-    return (
-        "https://www.youtube.com/feeds/videos.xml"
-        f"?channel_id={SONY_SAB_CHANNEL_ID}"
-    )
-
-
-import requests
-
-def get_youtube_feed():
-    """
-    Download Sony SAB's official YouTube RSS feed using requests.
-    """
-    print("\nFetching Sony SAB YouTube RSS feed...")
-    rss_url = get_channel_rss_url()
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5"
-    }
-
-    response = requests.get(rss_url, headers=headers, timeout=30)
-    response.raise_for_status()
-
-    return ET.fromstring(response.content)
-
-
-# ============================================================
-# FIND LATEST TMKOC TEASER VIA YT-DLP
+# FIND LATEST TMKOC TEASER VIA YT-DLP PLAYLIST
 # ============================================================
 
 def find_latest_teaser():
@@ -141,6 +106,7 @@ def find_latest_teaser():
         "quiet": True,
         "geo_bypass": True,
         "geo_bypass_country": "IN",
+        "proxy": os.getenv("INDIAN_PROXY_URL"),
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "js_runtimes": {
             "node": {}
@@ -216,12 +182,13 @@ def find_latest_teaser():
 
     return latest
 
+
 # ============================================================
-# DOWNLOAD VIDEO (OPTIMIZED FOR SPEED)
+# DOWNLOAD AUDIO ONLY (BYPASSES CLOUD GEO-BLOCKING)
 # ============================================================
 
-def download_video(video_url):
-    print("\nDownloading teaser video (optimized)...")
+def download_audio(video_url):
+    print("\nDownloading teaser audio stream (cloud-optimized)...")
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
     for old_file in glob.glob(os.path.join(DOWNLOAD_DIR, "tmkoc_teaser.*")):
@@ -233,11 +200,14 @@ def download_video(video_url):
     output_template = os.path.join(DOWNLOAD_DIR, "tmkoc_teaser.%(ext)s")
 
     options = {
-        "format": "bestvideo[height<=480]+bestaudio/best[height<=480]/best",
+        "format": "m4a/bestaudio/best",
         "outtmpl": output_template,
-        "merge_output_format": "mp4",
         "noplaylist": True,
         "quiet": True,
+        "geo_bypass": True,
+        "geo_bypass_country": "IN",
+        "proxy": os.getenv("INDIAN_PROXY_URL"),  # Added proxy support
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "js_runtimes": {
             "node": {}
         },
@@ -247,33 +217,33 @@ def download_video(video_url):
         with yt_dlp.YoutubeDL(options) as ydl:
             ydl.download([video_url])
     except Exception as e:
-        print("\nDownload failed:", str(e))
+        print("\nAudio download failed:", str(e))
         raise
 
     files = glob.glob(os.path.join(DOWNLOAD_DIR, "tmkoc_teaser.*"))
-    video_files = [
+    audio_files = [
         f for f in files
-        if f.lower().endswith((".mp4", ".mkv", ".webm", ".mov", ".m4v"))
+        if f.lower().endswith((".m4a", ".mp3", ".aac", ".wav", ".opus"))
     ]
 
-    if not video_files:
-        raise Exception("Video download failed: no video file found.")
+    if not audio_files:
+        raise Exception("Audio download failed: no audio file found.")
 
-    video_file = video_files[0]
-    print(f"Downloaded successfully: {video_file}")
-    return video_file
+    audio_file = audio_files[0]
+    print(f"Audio downloaded successfully: {audio_file}")
+    return audio_file
 
 
 # ============================================================
-# UPLOAD VIDEO TO GEMINI
+# UPLOAD AUDIO TO GEMINI
 # ============================================================
 
-def upload_video(video_file):
-    print("\nUploading teaser to Gemini...")
-    uploaded_file = client.files.upload(file=video_file)
+def upload_audio(audio_file):
+    print("\nUploading teaser audio to Gemini...")
+    uploaded_file = client.files.upload(file=audio_file)
     print("Gemini file uploaded:", uploaded_file.name)
 
-    print("Waiting for Gemini to process video...")
+    print("Waiting for Gemini to process audio...")
     while True:
         uploaded_file = client.files.get(name=uploaded_file.name)
         state = uploaded_file.state.name
@@ -282,40 +252,39 @@ def upload_video(video_file):
         if state == "ACTIVE":
             break
         if state == "FAILED":
-            raise Exception("Gemini failed to process the uploaded video.")
+            raise Exception("Gemini failed to process the uploaded audio.")
 
         time.sleep(3)
 
-    print("Video is ready for analysis.")
+    print("Audio is ready for analysis.")
     return uploaded_file
 
 
 # ============================================================
-# SUMMARIZE VIDEO
+# SUMMARIZE AUDIO
 # ============================================================
 
-def summarize_video(uploaded_file, teaser_title):
-    print("\nAnalyzing teaser with Gemini...")
+def summarize_audio(uploaded_file, teaser_title):
+    print("\nAnalyzing teaser audio with Gemini...")
 
     prompt = f"""
-You are analyzing an official Taarak Mehta Ka Ooltah Chashmah (TMKOC) episode teaser from Sony SAB.
+You are analyzing the official audio teaser from Taarak Mehta Ka Ooltah Chashmah (TMKOC) episode by Sony SAB.
 
 Video title:
 {teaser_title}
 
-Watch the ENTIRE video carefully. Analyze both spoken dialogue and visual actions/events.
+Listen carefully to the audio dialogue, character voices, and sound effects.
 
 Create a concise, engaging summary in English (150-250 words) covering:
 1. Episode number, if visible or inferable from the title
-2. Main characters appearing in the teaser
-3. What happens in the teaser
-4. The main problem/conflict
-5. Important dialogue or revelation, paraphrased
-6. What appears likely to happen in the upcoming episode
+2. Main characters speaking or involved in the dialogue
+3. What happens in the upcoming episode based on the audio details
+4. The main problem or conflict highlighted
+5. Important dialogue exchanges or revelations, paraphrased
+6. What viewers can expect
 
 Important rules:
-- Do NOT invent events or assume things not shown.
-- Clearly distinguish what is shown from what is suggested.
+- Do NOT invent events or assume things not mentioned.
 - Keep it easy to read with bullet points or structured sections.
 """
 
@@ -396,7 +365,7 @@ def main():
 
     validate_config()
 
-    # 1. Automatically find latest teaser from Sony SAB RSS feed
+    # 1. Automatically find latest teaser from Sony SAB channel
     teaser = find_latest_teaser()
     if not teaser:
         print("No eligible teaser found at this moment.")
@@ -411,14 +380,14 @@ def main():
     uploaded_file = None
 
     try:
-        # 2. Download optimized video
-        video_file = download_video(teaser["url"])
+        # 2. Download audio stream only (bypasses region block on GitHub Actions)
+        audio_file = download_audio(teaser["url"])
 
-        # 3. Upload to Gemini Files API
-        uploaded_file = upload_video(video_file)
+        # 3. Upload audio to Gemini Files API
+        uploaded_file = upload_audio(audio_file)
 
-        # 4. Generate summary
-        summary = summarize_video(uploaded_file, teaser["title"])
+        # 4. Generate summary from audio content
+        summary = summarize_audio(uploaded_file, teaser["title"])
 
         print("\n" + "=" * 60)
         print("GEMINI SUMMARY OUTPUT")

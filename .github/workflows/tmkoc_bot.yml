@@ -26,4 +26,5 @@ jobs:
           EVOLUTION_API_URL: ${{ secrets.EVOLUTION_API_URL }}
           EVOLUTION_API_KEY: ${{ secrets.EVOLUTION_API_KEY }}
           WHATSAPP_NUMBER: ${{ secrets.WHATSAPP_NUMBER }}
+          INDIAN_PROXY_URL: ${{ secrets.INDIAN_PROXY_URL }}
         run: python main.py
