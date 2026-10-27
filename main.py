@@ -1,8 +1,6 @@
 import os
 import glob
 import time
-import urllib.request
-import urllib.parse
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -90,52 +88,24 @@ def save_last_processed_video(video_id):
 
 
 # ============================================================
-# YOUTUBE RSS & TEASER DISCOVERY
-# ============================================================
-
-def get_channel_rss_url():
-    return (
-        "https://www.youtube.com/feeds/videos.xml"
-        f"?channel_id={SONY_SAB_CHANNEL_ID}"
-    )
-
-
-import requests
-
-def get_youtube_feed():
-    """
-    Download Sony SAB's official YouTube RSS feed using requests.
-    """
-    print("\nFetching Sony SAB YouTube RSS feed...")
-    rss_url = get_channel_rss_url()
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5"
-    }
-
-    response = requests.get(rss_url, headers=headers, timeout=30)
-    response.raise_for_status()
-
-    return ET.fromstring(response.content)
-
-
-# ============================================================
-# FIND LATEST TMKOC TEASER VIA YT-DLP
+# FIND RECENT TMKOC TEASERS VIA YOUTUBE PLAYLIST
 # ============================================================
 
 def find_recent_teasers():
     """
-    Find recent TMKOC teasers uploaded by Sony SAB, newest first.
+    Find recent TMKOC teasers uploaded by Sony SAB using the stable uploads playlist URL.
     """
-    print("\nFetching latest videos from Sony SAB channel...")
-    channel_url = f"https://www.youtube.com/channel/{SONY_SAB_CHANNEL_ID}/videos"
+    print("\nFetching latest videos from Sony SAB playlist...")
+    playlist_id = "UU" + SONY_SAB_CHANNEL_ID[2:]
+    playlist_url = f"https://www.youtube.com/playlist?list={playlist_id}"
 
     ydl_opts = {
         "extract_flat": True,  # Don't download videos, just grab metadata
-        "playlistend": 15,     # Check the 15 most recent uploads
+        "playlistend": 20,     # Check the 20 most recent uploads
         "quiet": True,
+        "geo_bypass": True,
+        "geo_bypass_country": "IN",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "js_runtimes": {
             "node": {}
         },
@@ -143,16 +113,16 @@ def find_recent_teasers():
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            result = ydl.extract_info(channel_url, download=False)
+            result = ydl.extract_info(playlist_url, download=False)
             
         if not result or "entries" not in result:
-            print("No videos found in channel response.")
-            return None
+            print("No videos found in playlist response.")
+            return []
 
         entries = result["entries"]
     except Exception as e:
-        print(f"Failed to fetch channel entries: {e}")
-        return None
+        print(f"Failed to fetch playlist entries: {e}")
+        return []
 
     now = datetime.now(INDIA_TZ)
     candidates = []
@@ -173,9 +143,7 @@ def find_recent_teasers():
         if not (is_tmkoc and is_teaser):
             continue
 
-        # yt-dlp flat extraction might not always give exact upload timestamps,
-        # so we fetch the individual video's upload date safely
-        upload_date_str = entry.get("upload_date") # Format: YYYYMMDD
+        upload_date_str = entry.get("upload_date")  # Format: YYYYMMDD
         if upload_date_str:
             try:
                 published_dt = datetime.strptime(upload_date_str, "%Y%m%d").replace(tzinfo=INDIA_TZ)
@@ -184,8 +152,8 @@ def find_recent_teasers():
         else:
             published_dt = now
 
-        # Ignore videos older than 2 days
-        if (now - published_dt) > timedelta(days=2) or published_dt > now:
+        # Ignore videos older than 3 days
+        if (now - published_dt) > timedelta(days=3) or published_dt > now:
             continue
 
         video_url = f"https://www.youtube.com/watch?v={video_id}"
@@ -220,8 +188,9 @@ def print_teaser(teaser):
     print(teaser["url"])
     print("Published:", teaser["published"].strftime("%d %B %Y"))
 
+
 # ============================================================
-# DOWNLOAD VIDEO (OPTIMIZED FOR SPEED)
+# DOWNLOAD VIDEO (OPTIMIZED FOR SPEED & PROXY SUPPORT)
 # ============================================================
 
 def download_video(video_url):
@@ -242,6 +211,10 @@ def download_video(video_url):
         "merge_output_format": "mp4",
         "noplaylist": True,
         "quiet": True,
+        "geo_bypass": True,
+        "geo_bypass_country": "IN",
+        "proxy": os.getenv("INDIAN_PROXY_URL"),  # Uses proxy secret on GitHub Actions
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "js_runtimes": {
             "node": {}
         },
@@ -400,7 +373,6 @@ def main():
 
     validate_config()
 
-    # 1. Automatically find latest teaser from Sony SAB RSS feed
     teasers = find_recent_teasers()
     if not teasers:
         print("No eligible teaser found at this moment.")
@@ -409,7 +381,6 @@ def main():
     teaser = teasers[0]
     print_teaser(teaser)
 
-    # Check if this video was already processed
     last_processed = get_last_processed_video()
     if teaser["video_id"] == last_processed:
         print("\nThis teaser has already been processed and sent. Exiting.")
@@ -418,7 +389,6 @@ def main():
     uploaded_file = None
 
     try:
-        # 2. Download the newest accessible teaser.
         video_file = None
         for index, candidate in enumerate(teasers):
             teaser = candidate
@@ -446,10 +416,8 @@ def main():
             print("No unprocessed, accessible recent teaser could be downloaded.")
             return
 
-        # 3. Upload to Gemini Files API
         uploaded_file = upload_video(video_file)
 
-        # 4. Generate summary
         summary = summarize_video(uploaded_file, teaser["title"])
 
         print("\n" + "=" * 60)
@@ -458,10 +426,8 @@ def main():
         print(summary)
         print("=" * 60)
 
-        # 5. Send to WhatsApp
         send_whatsapp(teaser, summary)
 
-        # 6. Save video ID so it doesn't process again
         save_last_processed_video(teaser["video_id"])
         print("\nProcess completed successfully!")
 
